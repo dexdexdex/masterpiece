@@ -9,210 +9,169 @@ class Game {
         this.targetCanvas = document.getElementById('targetCanvas');
         this.tCtx = this.targetCanvas.getContext('2d');
 
-        this.pieces = [];
-        this.targetParams = [];
-        this.dragPiece = null;
+        // State
+        this.splats = []; // {x, y, radius, color, rotation}
+        this.targetShapes = [];
+        this.isPainting = false;
 
-        this.UNIT = 50;
-        this.SHAPES = {
-            SQUARE: [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 50, y: 50 }, { x: 0, y: 50 }],
-            RECT_H: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 50 }, { x: 0, y: 50 }],
-            RECT_V: [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 50, y: 100 }, { x: 0, y: 100 }],
-            TRI_TL: [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 0, y: 50 }],
-            TRI_TR: [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 50, y: 50 }],
-            TRI_BR: [{ x: 50, y: 0 }, { x: 50, y: 50 }, { x: 0, y: 50 }],
-            TRI_BL: [{ x: 0, y: 0 }, { x: 50, y: 50 }, { x: 0, y: 50 }]
-        };
+        // Tools: 'shooter', 'roller', 'bucket'
+        this.currentTool = 'shooter';
+        this.inkColor = '#ff007f'; // Neon Pink (Splatoon-ish)
 
+        // Setup
         this.init();
         this.resizeCanvas();
         window.addEventListener('resize', () => this.resizeCanvas());
 
         // Input Handling
-        this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
-        window.addEventListener('mousemove', (e) => this.handleMouseMove(e));
-        window.addEventListener('mouseup', (e) => this.handleMouseUp(e));
+        this.canvas.addEventListener('mousedown', (e) => this.startPaint(e));
+        window.addEventListener('mousemove', (e) => this.paint(e));
+        window.addEventListener('mouseup', () => this.stopPaint());
 
-        // Buttons
-        const resetBtn = document.getElementById('reset-btn');
-        if (resetBtn) {
-            resetBtn.onclick = () => {
-                if (confirm('Start a new game with a new target?')) this.init();
-            };
-        }
-
-        const refillBtn = document.getElementById('refill-btn');
-        if (refillBtn) {
-            refillBtn.onclick = () => this.refillInventory();
-        }
+        // UI Bindings
+        this.bindUI();
 
         // Start Loop
         requestAnimationFrame(() => this.loop());
     }
 
     init() {
-        this.generateLevel();
+        this.splats = [];
+        this.generateTarget();
+        this.setupTools();
         this.renderTargetView();
-        this.refillInventory();
-        this.render(); // Initial render
     }
 
-    generateLevel() {
-        // Random Target Generation
-        this.targetParams = [];
-        const baseShapeKeys = Object.keys(this.SHAPES);
-
-        // Start roughly center
-        const startX = 350;
-        const startY = 250;
-        const count = 3 + Math.floor(Math.random() * 3); // 3 to 5 pieces
-
-        let placed = [];
-
-        for (let i = 0; i < count; i++) {
-            const key = baseShapeKeys[Math.floor(Math.random() * baseShapeKeys.length)];
-            const points = this.SHAPES[key];
-
-            let tx, ty;
-            if (i === 0) {
-                tx = startX;
-                ty = startY;
-            } else {
-                // Attach to previous
-                const prev = placed[Math.floor(Math.random() * placed.length)];
-                const dir = Math.floor(Math.random() * 4);
-                tx = prev.x;
-                ty = prev.y;
-                if (dir === 0) ty -= 50;
-                else if (dir === 1) ty += 50;
-                else if (dir === 2) tx -= 50;
-                else if (dir === 3) tx += 50;
-            }
-
-            this.targetParams.push({
-                points: points,
-                x: tx,
-                y: ty,
-                color: '#ddd'
-            });
-
-            placed.push({ x: tx, y: ty });
+    bindUI() {
+        const resetBtn = document.getElementById('reset-btn');
+        if (resetBtn) {
+            resetBtn.textContent = "NEW MATCH";
+            resetBtn.onclick = () => {
+                if (confirm('Start a new match?')) this.init();
+            };
         }
 
-        // Reset board pieces
-        this.pieces = [];
+        // Remove refill btn if exists, or re-purpose? Let's hide it for now.
+        const refillBtn = document.getElementById('refill-btn');
+        if (refillBtn) refillBtn.style.display = 'none';
+
+        const statusMsg = document.getElementById('status-message');
+        if (statusMsg) statusMsg.textContent = "PAINT THE TARGET!";
     }
 
-    refillInventory() {
-        const slots = ['p1-slot-1', 'p1-slot-2', 'p1-slot-3', 'p2-slot-1', 'p2-slot-2', 'p2-slot-3'];
+    setupTools() {
+        // Define our tools and bind them to slots
+        const tools = [
+            { id: 'shooter', name: 'Splat Shooter', iconColor: '#ff007f', type: 'rapid' },
+            { id: 'roller', name: 'Splat Roller', iconColor: '#00e5ff', type: 'continuous' }, // Cyan
+            { id: 'bucket', name: 'Slosher', iconColor: '#76ff03', type: 'burst' }, // Green
+        ];
 
-        // Keep pieces that are on board
-        const existingBoardPieces = this.pieces.filter(p => p.status === 'board');
-        this.pieces = existingBoardPieces;
+        const slots = ['p1-slot-1', 'p1-slot-2', 'p1-slot-3'];
 
-        const baseShapeKeys = Object.keys(this.SHAPES);
+        // Clear slots
+        ['p1-slot-1', 'p1-slot-2', 'p1-slot-3', 'p2-slot-1', 'p2-slot-2', 'p2-slot-3'].forEach(id => {
+            document.getElementById(id).innerHTML = '';
+            document.getElementById(id).style.border = '1px solid rgba(255,255,255,0.1)';
+        });
 
-        slots.forEach(slot => {
-            const key = baseShapeKeys[Math.floor(Math.random() * baseShapeKeys.length)];
-            const p = {
-                id: 'inv_' + Math.random().toString(36).substr(2, 9),
-                points: this.SHAPES[key],
-                color: Math.random() > 0.5 ? '#eee' : '#111',
-                status: 'inventory',
-                inventorySlot: slot,
-                x: 0,
-                y: 0
+        tools.forEach((tool, index) => {
+            const slot = document.getElementById(slots[index]);
+            if (!slot) return;
+
+            // Render Tool Icon
+            slot.innerHTML = `<div style="font-size:10px; color:#fff; text-align:center; padding-top:40px; font-weight:bold;">${tool.name}</div>`;
+            slot.style.background = `radial-gradient(circle, ${tool.iconColor} 0%, rgba(0,0,0,0) 70%)`;
+            slot.style.cursor = 'pointer';
+
+            slot.onclick = () => {
+                this.currentTool = tool.id;
+                this.inkColor = tool.iconColor;
+                // Visual feedback for selection
+                document.querySelectorAll('.piece-slot').forEach(s => s.style.border = '1px solid rgba(255,255,255,0.1)');
+                slot.style.border = '2px solid white';
             };
-            this.pieces.push(p);
-            this.renderInventorySlot(slot, p);
+
+            // Auto-select first
+            if (index === 0) slot.click();
         });
     }
 
-    renderInventorySlot(slotId, piece) {
-        const slot = document.getElementById(slotId);
-        if (!slot) return;
-        slot.innerHTML = '';
+    generateTarget() {
+        // Generate a random geometric blob as the target
+        this.targetShapes = [];
+        const count = 4 + Math.floor(Math.random() * 3);
+        const cx = 400; // Center logic coordinates (0-800)
+        const cy = 300;
 
-        if (!piece) {
-            slot.style.opacity = 0.5;
-            slot.style.cursor = 'default';
-            slot.onmousedown = null;
-            return;
+        for (let i = 0; i < count; i++) {
+            this.targetShapes.push({
+                x: cx + (Math.random() - 0.5) * 200,
+                y: cy + (Math.random() - 0.5) * 150,
+                w: 50 + Math.random() * 100,
+                h: 50 + Math.random() * 100,
+                rotation: Math.random() * Math.PI
+            });
         }
-
-        const miniCanvas = document.createElement('canvas');
-        miniCanvas.width = 100;
-        miniCanvas.height = 100;
-        const mCtx = miniCanvas.getContext('2d');
-
-        const xs = piece.points.map(p => p.x);
-        const ys = piece.points.map(p => p.y);
-        const w = Math.max(...xs) - Math.min(...xs);
-        const h = Math.max(...ys) - Math.min(...ys);
-        const cx = (100 - w) / 2;
-        const cy = (100 - h) / 2;
-
-        mCtx.fillStyle = piece.color;
-        mCtx.beginPath();
-        mCtx.moveTo(piece.points[0].x + cx, piece.points[0].y + cy);
-        for (let i = 1; i < piece.points.length; i++) {
-            mCtx.lineTo(piece.points[i].x + cx, piece.points[i].y + cy);
-        }
-        mCtx.closePath();
-        mCtx.fill();
-
-        slot.appendChild(miniCanvas);
-        slot.style.opacity = 1;
-        slot.style.cursor = 'grab';
-
-        slot.onmousedown = (e) => this.startDragFromInventory(e, piece);
     }
 
-    startDragFromInventory(e, piece) {
-        if (this.dragPiece) return;
-
-        const rect = this.canvas.getBoundingClientRect();
-        const spawnX = e.clientX - rect.left - 25;
-        const spawnY = e.clientY - rect.top - 25;
-
-        piece.status = 'board';
-        piece.x = spawnX;
-        piece.y = spawnY;
-
-        this.dragPiece = { piece: piece, offsetX: 25, offsetY: 25 };
-
-        this.renderInventorySlot(piece.inventorySlot, null);
+    startPaint(e) {
+        this.isPainting = true;
+        this.paint(e); // Trigger immediately for click
     }
 
-    handleMouseDown(e) {
-        if (this.dragPiece) return;
+    stopPaint() {
+        this.isPainting = false;
+        this.lastPaintTime = 0;
+    }
+
+    paint(e) {
+        if (!this.isPainting) return;
 
         const rect = this.canvas.getBoundingClientRect();
-        const mx = e.clientX - rect.left;
-        const my = e.clientY - rect.top;
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
 
-        const boardPieces = this.pieces.filter(p => p.status === 'board').reverse();
-        for (let p of boardPieces) {
-            if (this.isPointInPoly(mx, my, p)) {
-                this.dragPiece = { piece: p, offsetX: mx - p.x, offsetY: my - p.y };
-                break;
+        const now = Date.now();
+
+        // Tool Logic
+        if (this.currentTool === 'shooter') {
+            // Rapid fire: Limit rate
+            if (!this.lastPaintTime || now - this.lastPaintTime > 50) {
+                // Add jitter
+                const jx = x + (Math.random() - 0.5) * 20;
+                const jy = y + (Math.random() - 0.5) * 20;
+                this.addSplat(jx, jy, 15 + Math.random() * 10);
+                this.lastPaintTime = now;
+            }
+        } else if (this.currentTool === 'roller') {
+            // Continuous heavy
+            this.addSplat(x, y, 40); // Big consistent path
+        } else if (this.currentTool === 'bucket') {
+            // Only on click (handled by initial startPaint call mainly, but let's debounce)
+            // Actually, we want one big burst per click?
+            // Simple logic: If just started < 100ms? 
+            if (!this.lastPaintTime) {
+                // Splash multiple
+                for (let i = 0; i < 8; i++) {
+                    const jx = x + (Math.random() - 0.5) * 100;
+                    const jy = y + (Math.random() - 0.5) * 100;
+                    this.addSplat(jx, jy, 20 + Math.random() * 20);
+                }
+                this.lastPaintTime = now;
             }
         }
     }
 
-    handleMouseMove(e) {
-        if (!this.dragPiece) return;
-
-        const rect = this.canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left - this.dragPiece.offsetX;
-        const y = e.clientY - rect.top - this.dragPiece.offsetY;
-
-        this.dragPiece.piece.x = x;
-        this.dragPiece.piece.y = y;
-    }
-
-    handleMouseUp(e) {
-        this.dragPiece = null;
+    addSplat(x, y, radius) {
+        this.splats.push({
+            x: x,
+            y: y,
+            radius: radius,
+            color: this.inkColor,
+            rotation: Math.random() * Math.PI * 2,
+            roughness: Math.random() // Used for variation in draw
+        });
     }
 
     resizeCanvas() {
@@ -229,74 +188,65 @@ class Game {
     }
 
     render() {
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        // Clear background
+        this.ctx.fillStyle = '#222'; // Dark floor
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-        this.ctx.fillStyle = 'rgba(255,255,255,0.02)';
-        this.ctx.beginPath();
-        this.ctx.arc(this.canvas.width / 2, this.canvas.height / 2, 5, 0, Math.PI * 2);
-        this.ctx.fill();
-
-        this.pieces.forEach(p => {
-            if (p.status === 'board') {
-                this.drawPolygon(p.points, p.x, p.y, p.color, this.ctx);
-            }
+        // Draw Splats
+        this.splats.forEach(s => {
+            this.drawSplat(this.ctx, s.x, s.y, s.radius, s.color, s.rotation);
         });
+    }
+
+    drawSplat(ctx, x, y, radius, color, rotation) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(rotation);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        // Draw a "blob" not a circle
+        // 8 points
+        ctx.moveTo(radius, 0);
+        for (let i = 1; i <= 8; i++) {
+            const angle = i * Math.PI * 2 / 8;
+            const r = radius * (0.8 + Math.random() * 0.4); // This random causes "jitter" every frame which is bad.
+            // We need stored wobble or just use circle for performace 
+            // actually standard circle for now for performance, maybe overlapping circles
+        }
+        // Simplified:
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
     }
 
     renderTargetView() {
-        if (!this.tCtx || !this.targetParams.length) return;
+        if (!this.tCtx) return;
+        // Make target fit
+        this.tCtx.fillStyle = '#111';
+        this.tCtx.fillRect(0, 0, this.targetCanvas.width, this.targetCanvas.height);
 
-        this.tCtx.clearRect(0, 0, this.targetCanvas.width, this.targetCanvas.height);
-
-        const allPoints = this.targetParams.flatMap(t => t.points.map(p => ({ x: p.x + t.x, y: p.y + t.y })));
-        if (allPoints.length === 0) return;
-
-        const minX = Math.min(...allPoints.map(p => p.x));
-        const maxX = Math.max(...allPoints.map(p => p.x));
-        const minY = Math.min(...allPoints.map(p => p.y));
-        const maxY = Math.max(...allPoints.map(p => p.y));
-
-        const w = maxX - minX;
-        const h = maxY - minY;
-        const scale = Math.min((this.targetCanvas.width - 20) / w, (this.targetCanvas.height - 20) / h);
+        // Find bounds of target shapes
+        // Just centering for now roughly
+        // Scale down to fit 150x120
+        const scale = 0.15;
         const cx = this.targetCanvas.width / 2;
         const cy = this.targetCanvas.height / 2;
 
-        this.targetParams.forEach(target => {
-            const centerGrpX = minX + w / 2;
-            const centerGrpY = minY + h / 2;
-            const tPoints = target.points.map(p => ({
-                x: (p.x + target.x - centerGrpX) * scale,
-                y: (p.y + target.y - centerGrpY) * scale
-            }));
-            this.drawPolygon(tPoints, cx, cy, target.color, this.tCtx);
+        this.tCtx.fillStyle = this.inkColor; // Target is the color we want? Or just white?
+        // Let's make target always P1 color for now, or white "Ghost"
+        this.tCtx.fillStyle = '#ffffff';
+
+        this.targetShapes.forEach(shape => {
+            // We need to map world coords (400,300) to target canvas coords
+            const tx = (shape.x - 400) * scale + cx;
+            const ty = (shape.y - 300) * scale + cy;
+
+            this.tCtx.save();
+            this.tCtx.translate(tx, ty);
+            this.tCtx.rotate(shape.rotation);
+            this.tCtx.fillRect(-shape.w * scale / 2, -shape.h * scale / 2, shape.w * scale, shape.h * scale);
+            this.tCtx.restore();
         });
-    }
-
-    drawPolygon(points, x, y, color, ctx) {
-        ctx.beginPath();
-        ctx.moveTo(points[0].x + x, points[0].y + y);
-        for (let i = 1; i < points.length; i++) {
-            ctx.lineTo(points[i].x + x, points[i].y + y);
-        }
-        ctx.closePath();
-        ctx.fillStyle = color;
-        ctx.fill();
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-    }
-
-    isPointInPoly(x, y, poly) {
-        const points = poly.points.map(pt => ({ x: pt.x + poly.x, y: pt.y + poly.y }));
-        let inside = false;
-        for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-            const xi = points[i].x, yi = points[i].y;
-            const xj = points[j].x, yj = points[j].y;
-            const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-            if (intersect) inside = !inside;
-        }
-        return inside;
     }
 }
 
